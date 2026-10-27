@@ -45,6 +45,7 @@ func NewHub(app core.App) *Hub {
 	hub.um = users.NewUserManager(hub)
 	hub.rm = records.NewRecordManager(hub)
 	hub.sm = systems.NewSystemManager(hub)
+	hub.AlertManager.SetTopProcessesFetcher(hub.sm.FetchTopProcesses)
 	hub.hb = heartbeat.New(app, utils.GetEnv)
 	if hub.hb != nil {
 		hub.hbStop = make(chan struct{})

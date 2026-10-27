@@ -60,6 +60,7 @@ func NewHandlerRegistry() *HandlerRegistry {
 	registry.Register(common.SyncNetworkMonitors, &SyncNetworkMonitorsHandler{})
 	registry.Register(common.GetZfsData, &GetZfsDataHandler{})
 	registry.Register(common.GetPackageUpdates, &GetPackageUpdatesHandler{})
+	registry.Register(common.GetTopProcesses, &GetTopProcessesHandler{})
 
 	return registry
 }
@@ -221,6 +222,17 @@ func (h *GetPackageUpdatesHandler) Handle(hctx *HandlerContext) error {
 		return hctx.SendResponse(system.PackageUpdates{}, hctx.RequestID)
 	}
 	return hctx.SendResponse(hctx.Agent.packageUpdates.list(), hctx.RequestID)
+}
+
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+
+// GetTopProcessesHandler returns a one-off sample of the top processes by CPU
+// and memory. The hub requests it when a CPU, memory or load alert fires.
+type GetTopProcessesHandler struct{}
+
+func (h *GetTopProcessesHandler) Handle(hctx *HandlerContext) error {
+	return hctx.SendResponse(hctx.Agent.topProcesses.get(), hctx.RequestID)
 }
 
 ////////////////////////////////////////////////////////////////////////////
