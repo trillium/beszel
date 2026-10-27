@@ -46,9 +46,10 @@ func TestParsePsOutput(t *testing.T) {
   777   x:yy     100 /bin/broken
   900   0:00.00      0
 `)
-	readings, total, err := parsePsOutput(out, 100)
+	readings, scanned, total, err := parsePsOutput(out, 100)
 	require.NoError(t, err)
 	assert.Equal(t, 5, total, "lines with a numeric pid are counted")
+	assert.Equal(t, 5, scanned, "every process is scanned under the cap")
 	require.Len(t, readings, 4, "the line with a bad CPU time is skipped")
 
 	assert.Equal(t, procReading{cpu: 67*60 + 10.56, rss: 23440 * 1024, name: "launchd"}, readings[1])
@@ -57,12 +58,13 @@ func TestParsePsOutput(t *testing.T) {
 	assert.Equal(t, uint64(997326*1024), readings[4580].rss)
 	assert.Equal(t, procReading{}, readings[900], "a process without comm has no name")
 
-	capped, total, err := parsePsOutput(out, 2)
+	capped, scanned, total, err := parsePsOutput(out, 2)
 	require.NoError(t, err)
 	assert.Len(t, capped, 2, "maxScan caps processes read")
+	assert.Equal(t, 2, scanned)
 	assert.Equal(t, 5, total, "total still counts every process")
 
-	_, _, err = parsePsOutput([]byte("  PID TIME RSS COMM\n"), 100)
+	_, _, _, err = parsePsOutput([]byte("  PID TIME RSS COMM\n"), 100)
 	assert.Error(t, err)
 }
 
@@ -84,7 +86,6 @@ func TestBuildTopProcesses(t *testing.T) {
 
 	got := buildTopProcesses(first, second, 2*time.Second, 5)
 
-	assert.Equal(t, uint32(4), got.Scanned, "only processes in both reads are ranked")
 	assert.Equal(t, []system.ProcessUsage{
 		{Pid: 10, Name: "busy", Cpu: 100, Rss: 1 << 20},
 		{Pid: 12, Name: "half", Cpu: 50, Rss: 2 << 20},
@@ -116,23 +117,37 @@ func TestBuildTopProcessesLooksUpMissingNames(t *testing.T) {
 func TestSampleTopProcesses(t *testing.T) {
 	t.Run("reads twice and reports totals", func(t *testing.T) {
 		calls := 0
-		reader := func(_ context.Context, maxScan int) (map[int32]procReading, int, error) {
+		reader := func(_ context.Context, maxScan int) (map[int32]procReading, int, int, error) {
 			calls++
 			assert.Equal(t, 50, maxScan)
-			return map[int32]procReading{1: {cpu: float64(calls), rss: 1 << 20, name: "p"}}, 80, nil
+			return map[int32]procReading{1: {cpu: float64(calls), rss: 1 << 20, name: "p"}}, 50, 80, nil
 		}
 		got := sampleTopProcesses(context.Background(), reader, 10*time.Millisecond, 50, 5)
 		assert.Equal(t, 2, calls)
 		assert.Equal(t, uint32(80), got.Total)
-		assert.Equal(t, uint32(1), got.Scanned)
+		assert.Equal(t, uint32(50), got.Scanned, "scanned comes from the reader, not the ranked count")
 		assert.GreaterOrEqual(t, got.SampleMs, uint32(10))
 		require.Len(t, got.ByCpu, 1)
 		assert.Equal(t, "p", got.ByCpu[0].Name)
 	})
 
+	t.Run("process churn during the window does not mark the sample truncated", func(t *testing.T) {
+		calls := 0
+		reader := func(context.Context, int) (map[int32]procReading, int, int, error) {
+			calls++
+			if calls == 1 {
+				return map[int32]procReading{1: {cpu: 1, rss: 1}, 2: {cpu: 1, rss: 1}}, 2, 2, nil
+			}
+			// pid 2 exited and pid 3 started between the reads
+			return map[int32]procReading{1: {cpu: 2, rss: 1}, 3: {cpu: 1, rss: 1}}, 2, 2, nil
+		}
+		got := sampleTopProcesses(context.Background(), reader, time.Millisecond, 50, 5)
+		assert.Equal(t, got.Total, got.Scanned)
+	})
+
 	t.Run("returns empty sample on read error", func(t *testing.T) {
-		reader := func(context.Context, int) (map[int32]procReading, int, error) {
-			return nil, 0, errors.New("boom")
+		reader := func(context.Context, int) (map[int32]procReading, int, int, error) {
+			return nil, 0, 0, errors.New("boom")
 		}
 		got := sampleTopProcesses(context.Background(), reader, time.Millisecond, 50, 5)
 		assert.Empty(t, got.ByCpu)
@@ -141,9 +156,9 @@ func TestSampleTopProcesses(t *testing.T) {
 
 	t.Run("stops when the budget expires during the window", func(t *testing.T) {
 		calls := 0
-		reader := func(context.Context, int) (map[int32]procReading, int, error) {
+		reader := func(context.Context, int) (map[int32]procReading, int, int, error) {
 			calls++
-			return map[int32]procReading{1: {cpu: 1, rss: 1}}, 1, nil
+			return map[int32]procReading{1: {cpu: 1, rss: 1}}, 1, 1, nil
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 		defer cancel()
@@ -168,7 +183,9 @@ func testSampleTopProcessesLive(t *testing.T, read procReader) {
 	t.Logf("sample took %v, read %d of %d processes", time.Since(start), got.Scanned, got.Total)
 
 	require.NotZero(t, got.Total)
-	assert.LessOrEqual(t, got.Scanned, got.Total)
+	if got.Total <= topProcessesMaxScan {
+		assert.Equal(t, got.Total, got.Scanned, "nothing is cut off under the cap")
+	}
 	require.NotEmpty(t, got.ByMem, "at least this test process has RSS")
 	assert.LessOrEqual(t, len(got.ByMem), topProcessesCount)
 	assert.LessOrEqual(t, len(got.ByCpu), topProcessesCount)

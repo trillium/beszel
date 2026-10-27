@@ -39,8 +39,9 @@ type procReading struct {
 	name string
 }
 
-// procReader reads up to maxScan processes and reports how many exist.
-type procReader func(ctx context.Context, maxScan int) (readings map[int32]procReading, total int, err error)
+// procReader reads up to maxScan processes. scanned is how many it tried to
+// read, which is less than total only if it hit maxScan or ctx expired.
+type procReader func(ctx context.Context, maxScan int) (readings map[int32]procReading, scanned, total int, err error)
 
 // topProcessesSampler takes on-demand samples of the heaviest processes.
 // Nothing runs between requests; the zero value is ready to use.
@@ -71,7 +72,7 @@ func sampleTopProcesses(ctx context.Context, read procReader, window time.Durati
 	result := system.TopProcesses{SampleMs: uint32(window.Milliseconds())}
 
 	start := time.Now()
-	first, _, err := read(ctx, maxScan)
+	first, _, _, err := read(ctx, maxScan)
 	if err != nil {
 		return result
 	}
@@ -83,13 +84,14 @@ func sampleTopProcesses(ctx context.Context, read procReader, window time.Durati
 	}
 
 	elapsed := time.Since(start)
-	second, total, err := read(ctx, maxScan)
+	second, scanned, total, err := read(ctx, maxScan)
 	if err != nil {
 		return result
 	}
 
 	result = buildTopProcesses(first, second, elapsed, n)
 	result.SampleMs = uint32(elapsed.Milliseconds())
+	result.Scanned = uint32(scanned)
 	result.Total = uint32(total)
 	return result
 }
@@ -114,11 +116,7 @@ func buildTopProcesses(first, second map[int32]procReading, elapsed time.Duratio
 	names := make(map[int32]string, len(byCpu)+len(byMem))
 	fillNames(byCpu, names)
 	fillNames(byMem, names)
-	return system.TopProcesses{
-		ByCpu:   byCpu,
-		ByMem:   byMem,
-		Scanned: uint32(len(samples)),
-	}
+	return system.TopProcesses{ByCpu: byCpu, ByMem: byMem}
 }
 
 // rankTopProcesses returns the top n samples by CPU and by RSS, highest first.
@@ -164,20 +162,22 @@ func fillNames(usage []system.ProcessUsage, names map[int32]string) {
 
 // readProcessesGopsutil reads CPU time and RSS through gopsutil (/proc on Linux).
 // Names are left empty and filled in later for reported processes only.
-func readProcessesGopsutil(ctx context.Context, maxScan int) (map[int32]procReading, int, error) {
+func readProcessesGopsutil(ctx context.Context, maxScan int) (map[int32]procReading, int, int, error) {
 	pids, err := process.PidsWithContext(ctx)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	total := len(pids)
 	if len(pids) > maxScan {
 		pids = pids[:maxScan]
 	}
 	readings := make(map[int32]procReading, len(pids))
+	scanned := 0
 	for _, pid := range pids {
 		if ctx.Err() != nil {
 			break
 		}
+		scanned++
 		proc := &process.Process{Pid: pid}
 		times, err := proc.TimesWithContext(ctx)
 		if err != nil {
@@ -189,24 +189,24 @@ func readProcessesGopsutil(ctx context.Context, maxScan int) (map[int32]procRead
 		}
 		readings[pid] = reading
 	}
-	return readings, total, nil
+	return readings, scanned, total, nil
 }
 
 // readProcessesPs reads processes with `ps`. On macOS ps is setuid root, so
 // it can read processes owned by other users that gopsutil cannot.
-func readProcessesPs(ctx context.Context, maxScan int) (map[int32]procReading, int, error) {
+func readProcessesPs(ctx context.Context, maxScan int) (map[int32]procReading, int, int, error) {
 	out, err := exec.CommandContext(ctx, "ps", "-A", "-o", "pid=,time=,rss=,comm=").Output()
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	return parsePsOutput(out, maxScan)
 }
 
 // parsePsOutput parses `ps -A -o pid=,time=,rss=,comm=` output. time is CPU
 // time as [[dd-]hh:]mm:ss[.cc], rss is in KiB, comm is the executable path.
-func parsePsOutput(out []byte, maxScan int) (map[int32]procReading, int, error) {
+func parsePsOutput(out []byte, maxScan int) (map[int32]procReading, int, int, error) {
 	readings := make(map[int32]procReading)
-	total := 0
+	scanned, total := 0, 0
 	scanner := bufio.NewScanner(bytes.NewReader(out))
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
@@ -218,9 +218,10 @@ func parsePsOutput(out []byte, maxScan int) (map[int32]procReading, int, error) 
 			continue
 		}
 		total++
-		if len(readings) >= maxScan {
+		if scanned >= maxScan {
 			continue
 		}
+		scanned++
 		cpu, err := parseCPUTime(fields[1])
 		if err != nil {
 			continue
@@ -233,9 +234,9 @@ func parsePsOutput(out []byte, maxScan int) (map[int32]procReading, int, error) 
 		readings[int32(pid)] = reading
 	}
 	if total == 0 {
-		return nil, 0, errors.New("no processes in ps output")
+		return nil, 0, 0, errors.New("no processes in ps output")
 	}
-	return readings, total, scanner.Err()
+	return readings, scanned, total, scanner.Err()
 }
 
 // parseCPUTime parses a ps CPU time like "520:57.59", "1:02:03" or "2-01:02:03".
