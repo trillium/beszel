@@ -60,6 +60,7 @@ type Agent struct {
 	monitorManager            *MonitorManager                                       // Manages network monitors
 	storagePoolManager        *StoragePoolManager                                   // Manages storage pool and dataset data
 	packageUpdates            *packageUpdatesManager                                // Checks for pending package updates
+	topProcesses              topProcessesSampler                                   // Samples top processes on demand (for alerts)
 	lastHubRequest            atomic.Int64                                          // Wall clock Unix nanoseconds of the last hub stats request
 }
 

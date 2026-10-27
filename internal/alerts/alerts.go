@@ -25,6 +25,8 @@ type AlertManager struct {
 	pendingAlerts   sync.Map
 	alertsCache     *AlertsCache
 	networkMonitors *networkMonitorCache
+	// fetchTopProcesses samples the top processes for CPU, memory and load alerts.
+	fetchTopProcesses FetchTopProcessesFunc
 }
 
 type AlertMessageData struct {

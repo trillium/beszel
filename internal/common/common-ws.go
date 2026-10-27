@@ -30,6 +30,8 @@ const (
 	GetPackageUpdates
 	// Request recent logs for a systemd service from the agent.
 	GetSystemdLogs
+	// Request a one-off sample of the top processes by CPU and memory from the agent.
+	GetTopProcesses
 	// Add new actions here...
 )
 

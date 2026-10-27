@@ -95,6 +95,15 @@ func (sm *SystemManager) GetSystem(systemID string) (*System, error) {
 	return sys, nil
 }
 
+// FetchTopProcesses requests a top processes sample from a system's agent.
+func (sm *SystemManager) FetchTopProcesses(systemID string) (system.TopProcesses, error) {
+	sys, err := sm.GetSystem(systemID)
+	if err != nil {
+		return system.TopProcesses{}, err
+	}
+	return sys.FetchTopProcessesFromAgent()
+}
+
 // Initialize sets up the system manager by binding event hooks and starting existing systems.
 // It configures SSH client settings and begins monitoring all non-paused systems from the database.
 // Systems are started with staggered delays to prevent overwhelming the hub during startup.

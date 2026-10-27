@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/henrygd/beszel/internal/entities/system"
 	"github.com/pocketbase/pocketbase/core"
 )
 
@@ -110,4 +111,9 @@ func (am *AlertManager) SetAlertTriggered(alert CachedAlertData, triggered bool)
 // BuildContainerLogExcerpt exposes buildContainerLogExcerpt for testing.
 func BuildContainerLogExcerpt(raw string) string {
 	return buildContainerLogExcerpt(raw)
+}
+
+// FormatTopProcesses exposes formatTopProcesses for testing.
+func FormatTopProcesses(sample system.TopProcesses, memoryFirst bool) string {
+	return formatTopProcesses(sample, memoryFirst)
 }

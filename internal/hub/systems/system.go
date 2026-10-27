@@ -892,6 +892,38 @@ func (sys *System) FetchPackageUpdatesFromAgent() (system.PackageUpdates, error)
 	return result, err
 }
 
+// topProcessesRequestTimeout bounds the top processes request so an alert is
+// not held up by a slow agent or an agent too old to answer it.
+var topProcessesRequestTimeout = 5 * time.Second
+
+// errNoAgentConnection is returned when an alert-time request finds no open
+// connection to the agent. Alerts don't dial a new one.
+var errNoAgentConnection = errors.New("no open agent connection")
+
+// hasOpenConnection reports whether the hub holds an open WebSocket or SSH
+// connection to the agent.
+func (sys *System) hasOpenConnection() bool {
+	if sys.WsConn != nil && sys.WsConn.IsConnected() {
+		return true
+	}
+	sys.sshMu.Lock()
+	defer sys.sshMu.Unlock()
+	return sys.sshTransport != nil && sys.sshTransport.IsConnected()
+}
+
+// FetchTopProcessesFromAgent requests a one-off top processes sample from the agent.
+// It only uses an already open connection.
+func (sys *System) FetchTopProcessesFromAgent() (system.TopProcesses, error) {
+	if !sys.hasOpenConnection() {
+		return system.TopProcesses{}, errNoAgentConnection
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), topProcessesRequestTimeout)
+	defer cancel()
+	var result system.TopProcesses
+	err := sys.request(ctx, common.GetTopProcesses, nil, &result)
+	return result, err
+}
+
 // FetchZfsDataFromAgent fetches ZFS detail data from the agent.
 func (sys *System) FetchZfsDataFromAgent(force bool) (*zfs.ZfsData, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

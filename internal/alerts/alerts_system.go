@@ -387,6 +387,8 @@ func hasRepresentativeBattery(legacy [2]uint8, batteries map[string]uint8) bool 
 func (am *AlertManager) sendSystemAlert(alert SystemAlertData) {
 	// log.Printf("Sending alert %s: val %f | count %d | threshold %f\n", alert.name, alert.val, alert.count, alert.threshold)
 	systemName := alert.systemRecord.GetString("name")
+	wantsTopProcesses := alert.triggered && alertWantsTopProcesses(alert.name)
+	alertName := alert.name
 
 	if state, ok := cpuStateAlerts[alert.name]; ok {
 		alert.name = state.label
@@ -433,6 +435,12 @@ func (am *AlertManager) sendSystemAlert(alert SystemAlertData) {
 	if err := am.setAlertTriggered(alert.alertData, alert.triggered); err != nil {
 		// app.Logger().Error("failed to save alert record", "err", err)
 		return
+	}
+	// Sample after saving the triggered state so a slow agent can't cause a repeat alert.
+	if wantsTopProcesses && !am.IsNotificationSilenced(alert.alertData.UserID, alert.systemRecord.Id) {
+		if procs := am.topProcessesText(alert.systemRecord.Id, alertName); procs != "" {
+			body += "\n\n" + procs
+		}
 	}
 	am.SendAlert(AlertMessageData{
 		UserID:   alert.alertData.UserID,
